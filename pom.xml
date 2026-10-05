@@ -14,13 +14,13 @@
   <!-- Released as git tags vX.Y.Z; hosts build a release from its tag (sprout-platform ADR-011). -->
   <groupId>com.github.SaiNayakk</groupId>
   <artifactId>sprout-oms</artifactId>
-  <version>0.2.0</version>
+  <version>0.3.0</version>
   <name>sprout-oms</name>
   <description>Sprout's order management: orders, risk checks, holdings, intraday positions and charges.</description>
 
   <properties>
     <java.version>21</java.version>
-    <sprout-contracts.version>0.6.0</sprout-contracts.version>
+    <sprout-contracts.version>0.7.0</sprout-contracts.version>
   </properties>
 
   <repositories>

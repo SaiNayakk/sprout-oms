@@ -492,9 +492,12 @@ class OmsApiTest {
         String day = "2026-10-07";   // a trade date of this test's own
         SESSION.set(day);
         market("BUY", 5, "CNC");                       // pays 5,000
+        clock.advance(Duration.ofSeconds(1));          // executions a second apart, as real ones are
         LAST.put("HARBOR", 1050_00L);
         JsonNode sold = market("SELL", 2, "CNC");      // gets 2,100 less charges, unsettled
+        clock.advance(Duration.ofSeconds(1));
         market("BUY", 10, "MIS");
+        clock.advance(Duration.ofSeconds(1));
         LAST.put("HARBOR", 1060_00L);
         market("SELL", 10, "MIS");                     // intraday profit 100, unsettled
         outbox.flush();
@@ -532,6 +535,23 @@ class OmsApiTest {
         assertThat(h.path("quantity").asInt()).isEqualTo(3);
         assertThat(h.path("t1Quantity").asInt()).as("delivered").isZero();
         mvc.perform(get("/internal/v1/settlements/" + day + "/summary")).andExpect(status().isUnauthorized());
+
+        // the records other services report from
+        JsonNode executions = body(mvc.perform(get("/internal/v1/executions").param("from", day).param("to", day).param("userId", user.toString())
+                .header("X-Service-Key", "dev-only-service-key")).andExpect(status().isOk()).andExpect(MATCHES_CONTRACT)).path("executions");
+        assertThat(executions.size()).isEqualTo(4);
+        assertThat(executions.get(0).path("side").asText()).isEqualTo("BUY");
+        assertThat(executions.get(3).path("realisedPnl").asText()).isEqualTo("100.00");
+        JsonNode me = null;
+        for (JsonNode c : body(mvc.perform(get("/internal/v1/recon").header("X-Service-Key", "dev-only-service-key"))
+                .andExpect(status().isOk()).andExpect(MATCHES_CONTRACT)).path("customers")) {
+            if (c.path("userId").asText().equals(user.toString())) {
+                me = c;
+            }
+        }
+        assertThat(me).isNotNull();
+        assertThat(me.path("unsettled").asText()).as("the day is settled").isEqualTo("0.00");
+        assertThat(me.path("delivered").get(0).path("quantity").asLong()).isEqualTo(3);
     }
 
     // ── when the market is closed ────────────────────────────────────────────
