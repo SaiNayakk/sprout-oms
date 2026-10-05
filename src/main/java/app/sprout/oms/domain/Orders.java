@@ -192,19 +192,20 @@ public class Orders {
         }
         Long protection = null;
         long basis;
+        long tick = instrument.tickPaise();
+        long[] band = band(q.prevClosePaise(), tick);
         if (o.orderType() == OrderType.LIMIT) {
-            long tick = instrument.tickPaise();
             if (o.limitPaise() % tick != 0) {
                 return reject("INVALID_TICK", o.symbol() + " moves in steps of ₹" + Money.rupees(tick) + ".");
             }
-            long width = q.prevClosePaise() * props.bandPercent() / 100;
-            if (o.limitPaise() < q.prevClosePaise() - width || o.limitPaise() > q.prevClosePaise() + width) {
-                return reject("PRICE_OUT_OF_BAND", "Today " + o.symbol() + " can trade between ₹" + Money.rupees(q.prevClosePaise() - width)
-                        + " and ₹" + Money.rupees(q.prevClosePaise() + width) + ".");
+            if (o.limitPaise() < band[0] || o.limitPaise() > band[1]) {
+                return reject("PRICE_OUT_OF_BAND", "Today " + o.symbol() + " can trade between ₹" + Money.rupees(band[0])
+                        + " and ₹" + Money.rupees(band[1]) + ".");
             }
             basis = o.limitPaise();
         } else {
-            protection = protection(o.side(), q.lastPaise(), instrument.tickPaise());
+            // never beyond the day's band: the exchange would refuse it, and nothing can trade there anyway
+            protection = Math.max(band[0], Math.min(band[1], protection(o.side(), q.lastPaise(), tick)));
             basis = protection;
         }
         long value = Math.multiplyExact(basis, (long) o.quantity());
@@ -249,6 +250,12 @@ public class Orders {
         }
         long low = last * (100 - props.marketProtectionPercent()) / 100;
         return Math.max(tick, ceilDiv(low, tick) * tick);
+    }
+
+    /** The day's allowed prices, as the exchange computes them: the band around the previous close, on the tick. */
+    long[] band(long prevClose, long tick) {
+        long width = prevClose * props.bandPercent() / 100;
+        return new long[] {Math.max(tick, ceilDiv(prevClose - width, tick) * tick), (prevClose + width) / tick * tick};
     }
 
     private static Decision reject(String code, String message) {
