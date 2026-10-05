@@ -355,6 +355,30 @@ class OmsApiTest {
     }
 
     @Test
+    void aServicePlacesTaggedOrdersForACustomerUnderTheSameRules() throws Exception {
+        Map<String, Object> body = Map.of("userId", user.toString(), "symbol", "HARBOR", "side", "BUY", "quantity", 2, "orderType", "MARKET",
+                "product", "CNC", "tag", "sip:plan-1");
+        String key = "sip:plan-1:2026-10";
+        JsonNode o = body(mvc.perform(post("/internal/v1/orders").header("X-Service-Key", "dev-only-service-key").header("Idempotency-Key", key)
+                .contentType(MediaType.APPLICATION_JSON).content(JSON.writeValueAsString(body))).andExpect(status().isCreated()).andExpect(MATCHES_CONTRACT));
+        assertThat(o.path("status").asText()).isEqualTo("FILLED");
+        assertThat(o.path("tag").asText()).isEqualTo("sip:plan-1");
+        mvc.perform(post("/internal/v1/orders").header("X-Service-Key", "dev-only-service-key").header("Idempotency-Key", key)
+                .contentType(MediaType.APPLICATION_JSON).content(JSON.writeValueAsString(body))).andExpect(status().isOk());
+        JsonNode e = body(mvc.perform(get("/internal/v1/executions").param("from", "2026-10-05").param("to", "2026-10-05")
+                .param("userId", user.toString()).header("X-Service-Key", "dev-only-service-key"))).path("executions");
+        assertThat(e.size()).as("once").isEqualTo(1);
+        assertThat(e.get(0).path("tag").asText()).isEqualTo("sip:plan-1");
+        Map<String, Object> tooMuch = new LinkedHashMap<>(body);
+        tooMuch.put("quantity", 50);   // more than the customer's money: rejected like their own order would be
+        assertThat(body(mvc.perform(post("/internal/v1/orders").header("X-Service-Key", "dev-only-service-key")
+                .header("Idempotency-Key", UUID.randomUUID().toString()).contentType(MediaType.APPLICATION_JSON)
+                .content(JSON.writeValueAsString(tooMuch)))).path("rejection").path("code").asText()).isEqualTo("INSUFFICIENT_FUNDS");
+        mvc.perform(post("/internal/v1/orders").header("Idempotency-Key", UUID.randomUUID().toString()).contentType(MediaType.APPLICATION_JSON)
+                .content(JSON.writeValueAsString(body))).andExpect(status().isUnauthorized());
+    }
+
+    @Test
     void sendingTheSameOrderTwiceIsOneOrder() throws Exception {
         String key = UUID.randomUUID().toString();
         String id = body(place(key, "HARBOR", "BUY", 1, "MARKET", null, "CNC", null).andExpect(status().isCreated())).path("id").asText();

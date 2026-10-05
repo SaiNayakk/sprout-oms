@@ -21,7 +21,8 @@ import org.springframework.stereotype.Service;
 public class Records {
 
     public record Execution(UUID orderId, UUID userId, UUID tradeId, LocalDate tradeDate, Instant filledAt, String symbol, String side,
-                            String product, long quantity, long pricePaise, Breakdown charges, Long realisedPnlPaise, boolean autoSquareOff) {}
+                            String product, long quantity, long pricePaise, Breakdown charges, Long realisedPnlPaise, boolean autoSquareOff,
+                            String tag) {}
 
     /** What one customer should have: money held, sale proceeds not yet settled, delivered shares by symbol. */
     public record Expected(UUID userId, long held, long unsettled, Map<String, Long> delivered) {}
@@ -38,14 +39,14 @@ public class Records {
         }
         return db.sql("""
                         SELECT id, user_id, trade_id, trade_date, filled_at, symbol, side, product, quantity, fill_price_paise, brokerage_paise,
-                               stt_paise, exchange_paise, sebi_paise, stamp_paise, gst_paise, realised_pnl_paise, auto_square_off
+                               stt_paise, exchange_paise, sebi_paise, stamp_paise, gst_paise, realised_pnl_paise, auto_square_off, tag
                         FROM orders WHERE status = 'FILLED' AND trade_date BETWEEN ? AND ? AND (CAST(? AS uuid) IS NULL OR user_id = ?)
                         ORDER BY trade_date, filled_at, id""")
                 .params(from, to, userId, userId)
                 .query((rs, n) -> new Execution(rs.getObject(1, UUID.class), rs.getObject(2, UUID.class), rs.getObject(3, UUID.class),
                         rs.getObject(4, LocalDate.class), rs.getTimestamp(5).toInstant(), rs.getString(6), rs.getString(7), rs.getString(8),
                         rs.getLong(9), rs.getLong(10), new Breakdown(rs.getLong(11), rs.getLong(12), rs.getLong(13), rs.getLong(14),
-                        rs.getLong(15), rs.getLong(16)), rs.getObject(17, Long.class), rs.getBoolean(18)))
+                        rs.getLong(15), rs.getLong(16)), rs.getObject(17, Long.class), rs.getBoolean(18), rs.getString(19)))
                 .list();
     }
 

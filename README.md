@@ -31,6 +31,9 @@ The settlement back office reads a day's summary by Sprout's books (to check the
 obligation against), has short deliveries charged to the client, and, once the day has settled, makes
 clients' sale proceeds cash and their bought shares delivered: once per trade date.
 
+**Orders for customers.** Sprout's services can place a customer's order on their behalf (a plan's
+monthly instalment), with the same checks and charges, tagged so it can be told apart (`sip:<plan>`).
+
 ## Part of Sprout
 
 [Sprout](https://sainayakk.github.io/sprout-platform/) is a simulated brokerage built from scratch as
