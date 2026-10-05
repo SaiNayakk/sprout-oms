@@ -56,6 +56,9 @@ public class OmsController {
     public record NewOrderRequest(String symbol, Side side, Integer quantity, OrderType orderType, String limitPrice, Product product,
                                   Variety variety) {}
 
+    public record ServiceOrderRequest(UUID userId, String symbol, Side side, Integer quantity, OrderType orderType, String limitPrice,
+                                      Product product, String tag) {}
+
     public record ShortageBody(String clientCode, String symbol, Long quantity, String closeOutValue) {}
 
     public record ShortagesRequest(String settlementId, List<ShortageBody> shortages) {}
@@ -91,7 +94,7 @@ public class OmsController {
                                                      @RequestBody NewOrderRequest req) {
         Placed p = orders.place(userId(user), key, new NewOrder(req.symbol() == null ? null : req.symbol().trim().toUpperCase(),
                 req.side(), req.quantity(), req.orderType(), req.limitPrice() == null ? null : Money.paise(req.limitPrice()),
-                req.product(), req.variety()));
+                req.product(), req.variety(), null));
         return ResponseEntity.status(p.created() ? HttpStatus.CREATED : HttpStatus.OK).body(dto(p.order()));
     }
 
@@ -154,6 +157,21 @@ public class OmsController {
         return ResponseEntity.noContent().build();
     }
 
+    /** An order a Sprout service places for a customer (a plan's instalment): the same order, checks and charges, tagged. */
+    @PostMapping("/internal/v1/orders")
+    public ResponseEntity<Map<String, Object>> placeForCustomer(@RequestHeader(value = "X-Service-Key", required = false) String key,
+                                                                @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
+                                                                @RequestBody ServiceOrderRequest req) {
+        requireService(key);
+        if (req.userId() == null || req.tag() == null || !req.tag().matches("[a-z]{2,10}:[A-Za-z0-9-]{1,80}")) {
+            throw new ApiException(ErrorCode.VALIDATION_FAILED, "userId and a tag like sip:<planId> are required.");
+        }
+        Placed p = orders.place(req.userId(), idempotencyKey, new NewOrder(req.symbol() == null ? null : req.symbol().trim().toUpperCase(),
+                req.side(), req.quantity(), req.orderType(), req.limitPrice() == null ? null : Money.paise(req.limitPrice()), req.product(),
+                Variety.REGULAR, req.tag()));
+        return ResponseEntity.status(p.created() ? HttpStatus.CREATED : HttpStatus.OK).body(dto(p.order()));
+    }
+
     // ── records, for statements and reconciliation ──────────────────────────
 
     @GetMapping("/internal/v1/executions")
@@ -180,6 +198,9 @@ public class OmsController {
                 m.put("realisedPnl", Money.rupees(e.realisedPnlPaise()));
             }
             m.put("autoSquareOff", e.autoSquareOff());
+            if (e.tag() != null) {
+                m.put("tag", e.tag());
+            }
             return m;
         }).toList());
     }
@@ -310,6 +331,9 @@ public class OmsController {
             m.put("realisedPnl", Money.rupees(o.realisedPnlPaise()));
         }
         m.put("autoSquareOff", o.autoSquareOff());
+        if (o.tag() != null) {
+            m.put("tag", o.tag());
+        }
         if (o.rejectionCode() != null) {
             m.put("rejection", Map.of("code", o.rejectionCode(), "message", o.rejectionMessage()));
         }

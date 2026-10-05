@@ -63,13 +63,14 @@ public class Orders {
 
     public enum Variety { REGULAR, AMO }
 
+    /** An order to place; {@code tag} is set when a Sprout service places it for the customer (e.g. sip:&lt;planId&gt;). */
     public record NewOrder(String symbol, Side side, Integer quantity, OrderType orderType, Long limitPaise, Product product,
-                           Variety variety) {}
+                           Variety variety, String tag) {}
 
     public record Order(UUID id, UUID userId, String symbol, Side side, int quantity, OrderType orderType, Long limitPaise,
                         Long protectionPaise, Product product, Variety variety, String status, boolean opening, long holdPaise,
                         long blockedPaise, LocalDate positionSession, Long fillPricePaise, Breakdown charges, Long realisedPnlPaise,
-                        boolean autoSquareOff, String rejectionCode, String rejectionMessage, String reason, Instant filledAt,
+                        boolean autoSquareOff, String tag, String rejectionCode, String rejectionMessage, String reason, Instant filledAt,
                         Instant createdAt, Instant updatedAt) {
 
         public boolean working() {
@@ -135,13 +136,13 @@ public class Orders {
                 db.sql("""
                                 INSERT INTO orders (id, user_id, idempotency_key, request_hash, symbol, side, quantity, order_type, limit_paise,
                                                     protection_paise, product, variety, status, opening, hold_paise, position_session,
-                                                    rejection_code, rejection_message, created_at, updated_at)
-                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""")
+                                                    rejection_code, rejection_message, tag, created_at, updated_at)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""")
                         .params(id, user, key, hash, o.symbol(), o.side().name(), o.quantity(), o.orderType().name(), o.limitPaise(),
                                 d.protection(), o.product().name(), variety.name(), d.rejection() == null ? "PENDING" : "REJECTED",
                                 d.opening(), d.hold(), variety == Variety.REGULAR && o.product() == Product.MIS ? quote.market().sessionDate() : null,
                                 d.rejection() == null ? null : d.rejection().code(), d.rejection() == null ? null : d.rejection().message(),
-                                ts(now), ts(now))
+                                o.tag(), ts(now), ts(now))
                         .update();
                 return order(id);
             });
@@ -731,8 +732,8 @@ public class Orders {
     private static final String ORDER_SQL = """
             SELECT id, user_id, symbol, side, quantity, order_type, limit_paise, protection_paise, product, variety, status, opening,
                    hold_paise, blocked_paise, position_session, fill_price_paise, brokerage_paise, stt_paise, exchange_paise, sebi_paise,
-                   stamp_paise, gst_paise, realised_pnl_paise, auto_square_off, rejection_code, rejection_message, reason, filled_at,
-                   created_at, updated_at FROM orders""";
+                   stamp_paise, gst_paise, realised_pnl_paise, auto_square_off, tag, rejection_code, rejection_message, reason,
+                   filled_at, created_at, updated_at FROM orders""";
 
     private static Order row(ResultSet rs, int n) throws SQLException {
         Breakdown charges = rs.getObject("brokerage_paise") == null ? null
@@ -745,14 +746,14 @@ public class Orders {
                 Product.valueOf(rs.getString("product")), Variety.valueOf(rs.getString("variety")), rs.getString("status"),
                 rs.getBoolean("opening"), rs.getLong("hold_paise"), rs.getLong("blocked_paise"),
                 rs.getObject("position_session", LocalDate.class), rs.getObject("fill_price_paise", Long.class), charges,
-                rs.getObject("realised_pnl_paise", Long.class), rs.getBoolean("auto_square_off"), rs.getString("rejection_code"),
+                rs.getObject("realised_pnl_paise", Long.class), rs.getBoolean("auto_square_off"), rs.getString("tag"), rs.getString("rejection_code"),
                 rs.getString("rejection_message"), rs.getString("reason"), filled == null ? null : filled.toInstant(),
                 rs.getTimestamp("created_at").toInstant(), rs.getTimestamp("updated_at").toInstant());
     }
 
     static String hash(NewOrder o, Variety variety) {
         String canonical = String.join("|", o.symbol(), o.side().name(), String.valueOf(o.quantity()), o.orderType().name(),
-                String.valueOf(o.limitPaise()), o.product().name(), variety.name());
+                String.valueOf(o.limitPaise()), o.product().name(), variety.name(), String.valueOf(o.tag()));
         try {
             return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(canonical.getBytes(StandardCharsets.UTF_8)));
         } catch (Exception e) {
