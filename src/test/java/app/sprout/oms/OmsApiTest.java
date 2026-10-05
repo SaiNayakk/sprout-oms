@@ -86,6 +86,7 @@ class OmsApiTest {
     static final Map<String, Map<String, Object>> BOOK = new ConcurrentHashMap<>();
     static final AtomicBoolean EXCHANGE_DOWN = new AtomicBoolean();
     static final AtomicBoolean EXCHANGE_LOSES_REPLIES = new AtomicBoolean();
+    static final AtomicBoolean EXCHANGE_STALLS = new AtomicBoolean();
     static final HttpServer STANDINS = standIns();
 
     @DynamicPropertySource
@@ -133,6 +134,7 @@ class OmsApiTest {
         LEDGER_DOWN.set(false);
         EXCHANGE_DOWN.set(false);
         EXCHANGE_LOSES_REPLIES.set(false);
+        EXCHANGE_STALLS.set(false);
         user = UUID.randomUUID();
         ACCOUNTS.add(user.toString());
         deposit(user, 10_000_00L);
@@ -508,6 +510,22 @@ class OmsApiTest {
     }
 
     @Test
+    void aStallingExchangeNeverKeepsTheCustomerWaitingAndTheOrderIsSettledLater() throws Exception {
+        EXCHANGE_STALLS.set(true);
+        long start = System.nanoTime();
+        JsonNode o = market("BUY", 2, "CNC");
+        long tookMs = (System.nanoTime() - start) / 1_000_000;
+        assertThat(tookMs).as("answered inside the gateway's 5 s").isLessThan(3500);
+        assertThat(o.path("status").asText()).isEqualTo("PENDING");
+        EXCHANGE_STALLS.set(false);
+        Thread.sleep(5000);                         // the stalled exchange finishes executing it
+        clock.advance(Duration.ofSeconds(15));
+        rms.round();
+        assertThat(fetch(o).path("status").asText()).isEqualTo("FILLED");
+        assertThat(holdings().get(0).path("quantity").asInt()).isEqualTo(2);
+    }
+
+    @Test
     void anExecutionWhoseReplyWasLostIsFoundAndBookedOnce() throws Exception {
         EXCHANGE_LOSES_REPLIES.set(true);
         JsonNode o = market("BUY", 3, "CNC");
@@ -700,6 +718,13 @@ class OmsApiTest {
                 order.putIfAbsent("status", "OPEN");
             }
             BOOK.put(o.path("clientOrderId").asText(), order);
+            if (EXCHANGE_STALLS.get()) {
+                try {
+                    Thread.sleep(6000);   // longer than anyone should wait
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }
             if (EXCHANGE_LOSES_REPLIES.get()) {
                 reply(ex, 503, Map.of());
                 return;
