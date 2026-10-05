@@ -67,9 +67,11 @@ public class Upstreams {
     static final Duration EXCHANGE_DEADLINE = Duration.ofSeconds(2);
 
     private final HttpClient http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(1)).build();
+    private final Onward onward;
     private final Map<String, Instrument> instruments = new ConcurrentHashMap<>();
 
-    public Upstreams(OmsProperties props, ObjectMapper json) {
+    public Upstreams(OmsProperties props, ObjectMapper json, Onward onward) {
+        this.onward = onward;
         this.props = props;
         this.json = json;
     }
@@ -189,6 +191,7 @@ public class Upstreams {
     }
 
     private Reply send(String what, Duration deadline, HttpRequest.Builder req) {
+        onward.headers(req);
         try {
             // sendAsync + get: the deadline holds even while the host's name is being looked up
             HttpResponse<String> res = http.sendAsync(req.timeout(deadline).build(), HttpResponse.BodyHandlers.ofString())
