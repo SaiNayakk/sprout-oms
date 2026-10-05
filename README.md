@@ -26,6 +26,11 @@ Rules that keep the books right:
 The tests drive these paths against stand-ins for accounts, market data, a faithful ledger and the
 exchange, each of which can be steered or taken away.
 
+**Settlement (T+1).** Every execution records its trade date and the sale proceeds it left unsettled.
+The settlement back office reads a day's summary by Sprout's books (to check the clearing corporation's
+obligation against), has short deliveries charged to the client, and, once the day has settled, makes
+clients' sale proceeds cash and their bought shares delivered: once per trade date.
+
 ## Part of Sprout
 
 [Sprout](https://sainayakk.github.io/sprout-platform/) is a simulated brokerage built from scratch as

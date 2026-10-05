@@ -14,14 +14,20 @@ import app.sprout.oms.domain.Orders.OrderType;
 import app.sprout.oms.domain.Orders.Placed;
 import app.sprout.oms.domain.Orders.Variety;
 import app.sprout.oms.domain.Portfolio;
+import app.sprout.oms.domain.Settlements;
+import app.sprout.oms.domain.Settlements.Delivery;
+import app.sprout.oms.domain.Settlements.Shortage;
+import app.sprout.oms.domain.Settlements.Summary;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.sql.Timestamp;
 import java.time.Clock;
+import java.time.LocalDate;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import javax.crypto.Mac;
@@ -48,15 +54,26 @@ public class OmsController {
     public record NewOrderRequest(String symbol, Side side, Integer quantity, OrderType orderType, String limitPrice, Product product,
                                   Variety variety) {}
 
+    public record ShortageBody(String clientCode, String symbol, Long quantity, String closeOutValue) {}
+
+    public record ShortagesRequest(String settlementId, List<ShortageBody> shortages) {}
+
+    public record DeliveryBody(String clientCode, String symbol, Long quantity) {}
+
+    public record CompleteRequest(String settlementId, List<DeliveryBody> deliveries) {}
+
     private final Orders orders;
+    private final Settlements settlements;
     private final Portfolio portfolio;
     private final OmsProperties props;
     private final ObjectMapper json;
     private final JdbcClient db;
     private final Clock clock;
 
-    public OmsController(Orders orders, Portfolio portfolio, OmsProperties props, ObjectMapper json, JdbcClient db, Clock clock) {
+    public OmsController(Orders orders, Settlements settlements, Portfolio portfolio, OmsProperties props, ObjectMapper json, JdbcClient db,
+                         Clock clock) {
         this.orders = orders;
+        this.settlements = settlements;
         this.portfolio = portfolio;
         this.props = props;
         this.json = json;
@@ -127,9 +144,68 @@ public class OmsController {
             return ResponseEntity.noContent().build();
         }
         orders.onExecution(e.path("type").asText(), orderId, e.hasNonNull("price") ? Money.paise(e.path("price").asText()) : 0,
-                e.hasNonNull("tradeId") ? UUID.fromString(e.path("tradeId").asText()) : null, e.path("reason").asText(null));
+                e.hasNonNull("tradeId") ? UUID.fromString(e.path("tradeId").asText()) : null, LocalDate.parse(e.path("sessionDate").asText()),
+                e.path("reason").asText(null));
         remember(eventId);
         return ResponseEntity.noContent().build();
+    }
+
+    // ── settlement, for the back office ──────────────────────────────────────
+
+    @GetMapping("/internal/v1/settlements/{tradeDate}/summary")
+    public Map<String, Object> summary(@RequestHeader(value = "X-Service-Key", required = false) String key, @PathVariable LocalDate tradeDate) {
+        requireService(key);
+        Summary s = settlements.summary(tradeDate);
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("tradeDate", s.tradeDate().toString());
+        m.put("payable", Money.rupees(s.payable()));
+        m.put("receivable", Money.rupees(s.receivable()));
+        m.put("closeOuts", Money.rupees(s.closeOuts()));
+        m.put("unpostedLedgerEntries", s.unposted());
+        m.put("lines", s.lines().stream().map(l -> Map.<String, Object>of("clientCode", l.userId().toString(), "symbol", l.symbol(),
+                "bought", l.bought(), "sold", l.sold())).toList());
+        return m;
+    }
+
+    @PostMapping("/internal/v1/settlements/{tradeDate}/shortages")
+    public ResponseEntity<Void> shortages(@RequestHeader(value = "X-Service-Key", required = false) String key, @PathVariable LocalDate tradeDate,
+                                          @RequestBody ShortagesRequest req) {
+        requireService(key);
+        settlements.bookShortages(tradeDate, settlementId(req.settlementId()), req.shortages() == null ? List.of() : req.shortages().stream()
+                .map(s -> new Shortage(clientUser(s.clientCode()), s.symbol(), s.quantity() == null ? 0 : s.quantity(), Money.paise(s.closeOutValue())))
+                .toList());
+        return ResponseEntity.noContent().build();
+    }
+
+    @PostMapping("/internal/v1/settlements/{tradeDate}/complete")
+    public ResponseEntity<Void> complete(@RequestHeader(value = "X-Service-Key", required = false) String key, @PathVariable LocalDate tradeDate,
+                                         @RequestBody CompleteRequest req) {
+        requireService(key);
+        settlements.complete(tradeDate, settlementId(req.settlementId()), req.deliveries() == null ? List.of() : req.deliveries().stream()
+                .map(d -> new Delivery(clientUser(d.clientCode()), d.symbol(), d.quantity() == null ? 0 : d.quantity())).toList());
+        return ResponseEntity.noContent().build();
+    }
+
+    private void requireService(String key) {
+        if (key == null || !MessageDigest.isEqual(key.getBytes(StandardCharsets.UTF_8), props.serviceKey().getBytes(StandardCharsets.UTF_8))) {
+            throw new ApiException(ErrorCode.UNAUTHENTICATED, "Only Sprout services can call this.");
+        }
+    }
+
+    private static String settlementId(String id) {
+        if (id == null || id.isBlank() || id.length() > 120) {
+            throw new ApiException(ErrorCode.VALIDATION_FAILED, "settlementId is required.");
+        }
+        return id;
+    }
+
+    /** Client codes are the customers' user ids (see accounts: they're registered with clearing that way). */
+    private static UUID clientUser(String clientCode) {
+        try {
+            return UUID.fromString(clientCode);
+        } catch (RuntimeException e) {
+            throw new ApiException(ErrorCode.VALIDATION_FAILED, "Unknown client code " + clientCode + ".");
+        }
     }
 
     private void remember(UUID eventId) {

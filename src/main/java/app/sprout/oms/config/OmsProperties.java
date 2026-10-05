@@ -14,6 +14,7 @@ public record OmsProperties(
         int bandPercent,
         Duration rmsEvery,
         Duration reconcileAfter,
+        String serviceKey,
         Accounts accounts,
         Ledger ledger,
         Marketdata marketdata,

@@ -71,6 +71,7 @@ sprout:
     band-percent: 20                 # the exchange's price band, checked here too so queued orders fail early
     rms-every: ${OMS_RMS_EVERY:2s}   # how often after-market orders, square-off and risk are looked at
     reconcile-after: 10s             # an order the exchange hasn't confirmed by then is asked about
+    service-key: ${SPROUT_SERVICE_KEY:dev-only-service-key}   # other Sprout services call /internal with it
     accounts:
       url: ${OMS_ACCOUNTS_URL:http://127.0.0.1:8104}
       service-key: ${SPROUT_SERVICE_KEY:dev-only-service-key}
