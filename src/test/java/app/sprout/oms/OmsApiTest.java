@@ -532,6 +532,23 @@ class OmsApiTest {
         assertThat(h.path("quantity").asInt()).isEqualTo(3);
         assertThat(h.path("t1Quantity").asInt()).as("delivered").isZero();
         mvc.perform(get("/internal/v1/settlements/" + day + "/summary")).andExpect(status().isUnauthorized());
+
+        // the records other services report from
+        JsonNode executions = body(mvc.perform(get("/internal/v1/executions").param("from", day).param("to", day).param("userId", user.toString())
+                .header("X-Service-Key", "dev-only-service-key")).andExpect(status().isOk()).andExpect(MATCHES_CONTRACT)).path("executions");
+        assertThat(executions.size()).isEqualTo(4);
+        assertThat(executions.get(0).path("side").asText()).isEqualTo("BUY");
+        assertThat(executions.get(3).path("realisedPnl").asText()).isEqualTo("100.00");
+        JsonNode me = null;
+        for (JsonNode c : body(mvc.perform(get("/internal/v1/recon").header("X-Service-Key", "dev-only-service-key"))
+                .andExpect(status().isOk()).andExpect(MATCHES_CONTRACT)).path("customers")) {
+            if (c.path("userId").asText().equals(user.toString())) {
+                me = c;
+            }
+        }
+        assertThat(me).isNotNull();
+        assertThat(me.path("unsettled").asText()).as("the day is settled").isEqualTo("0.00");
+        assertThat(me.path("delivered").get(0).path("quantity").asLong()).isEqualTo(3);
     }
 
     // ── when the market is closed ────────────────────────────────────────────

@@ -14,6 +14,7 @@ import app.sprout.oms.domain.Orders.OrderType;
 import app.sprout.oms.domain.Orders.Placed;
 import app.sprout.oms.domain.Orders.Variety;
 import app.sprout.oms.domain.Portfolio;
+import app.sprout.oms.domain.Records;
 import app.sprout.oms.domain.Settlements;
 import app.sprout.oms.domain.Settlements.Delivery;
 import app.sprout.oms.domain.Settlements.Shortage;
@@ -43,6 +44,7 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 /** The orders API (oms-v1.yaml), plus the signed callback the exchange calls. */
@@ -64,16 +66,18 @@ public class OmsController {
 
     private final Orders orders;
     private final Settlements settlements;
+    private final Records records;
     private final Portfolio portfolio;
     private final OmsProperties props;
     private final ObjectMapper json;
     private final JdbcClient db;
     private final Clock clock;
 
-    public OmsController(Orders orders, Settlements settlements, Portfolio portfolio, OmsProperties props, ObjectMapper json, JdbcClient db,
-                         Clock clock) {
+    public OmsController(Orders orders, Settlements settlements, Records records, Portfolio portfolio, OmsProperties props, ObjectMapper json,
+                         JdbcClient db, Clock clock) {
         this.orders = orders;
         this.settlements = settlements;
+        this.records = records;
         this.portfolio = portfolio;
         this.props = props;
         this.json = json;
@@ -148,6 +152,45 @@ public class OmsController {
                 e.path("reason").asText(null));
         remember(eventId);
         return ResponseEntity.noContent().build();
+    }
+
+    // ── records, for statements and reconciliation ──────────────────────────
+
+    @GetMapping("/internal/v1/executions")
+    public Map<String, Object> executions(@RequestHeader(value = "X-Service-Key", required = false) String key, @RequestParam LocalDate from,
+                                          @RequestParam LocalDate to, @RequestParam(required = false) UUID userId) {
+        requireService(key);
+        return Map.of("executions", records.executions(from, to, userId).stream().map(e -> {
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("orderId", e.orderId().toString());
+            m.put("userId", e.userId().toString());
+            if (e.tradeId() != null) {
+                m.put("tradeId", e.tradeId().toString());
+            }
+            m.put("tradeDate", e.tradeDate().toString());
+            m.put("filledAt", e.filledAt().toString());
+            m.put("symbol", e.symbol());
+            m.put("side", e.side());
+            m.put("product", e.product());
+            m.put("quantity", e.quantity());
+            m.put("price", Money.rupees(e.pricePaise()));
+            m.put("value", Money.rupees(e.pricePaise() * e.quantity()));
+            m.put("charges", charges(e.charges()));
+            if (e.realisedPnlPaise() != null) {
+                m.put("realisedPnl", Money.rupees(e.realisedPnlPaise()));
+            }
+            m.put("autoSquareOff", e.autoSquareOff());
+            return m;
+        }).toList());
+    }
+
+    @GetMapping("/internal/v1/recon")
+    public Map<String, Object> recon(@RequestHeader(value = "X-Service-Key", required = false) String key) {
+        requireService(key);
+        return Map.of("customers", records.expected().stream().map(x -> Map.<String, Object>of("userId", x.userId().toString(),
+                "held", Money.rupees(x.held()), "unsettled", Money.rupees(x.unsettled()),
+                "delivered", x.delivered().entrySet().stream().map(d -> Map.<String, Object>of("symbol", d.getKey(), "quantity", d.getValue()))
+                        .toList())).toList());
     }
 
     // ── settlement, for the back office ──────────────────────────────────────
@@ -230,6 +273,18 @@ public class OmsController {
         }
     }
 
+    static Map<String, Object> charges(Breakdown c) {
+        Map<String, Object> charges = new LinkedHashMap<>();
+        charges.put("brokerage", Money.rupees(c.brokerage()));
+        charges.put("stt", Money.rupees(c.stt()));
+        charges.put("exchangeCharges", Money.rupees(c.exchange()));
+        charges.put("sebiFees", Money.rupees(c.sebi()));
+        charges.put("stampDuty", Money.rupees(c.stamp()));
+        charges.put("gst", Money.rupees(c.gst()));
+        charges.put("total", Money.rupees(c.total()));
+        return charges;
+    }
+
     static Map<String, Object> dto(Order o) {
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("id", o.id().toString());
@@ -249,16 +304,7 @@ public class OmsController {
             m.put("value", Money.rupees(o.fillPricePaise() * o.quantity()));
         }
         if (o.charges() != null) {
-            Breakdown c = o.charges();
-            Map<String, Object> charges = new LinkedHashMap<>();
-            charges.put("brokerage", Money.rupees(c.brokerage()));
-            charges.put("stt", Money.rupees(c.stt()));
-            charges.put("exchangeCharges", Money.rupees(c.exchange()));
-            charges.put("sebiFees", Money.rupees(c.sebi()));
-            charges.put("stampDuty", Money.rupees(c.stamp()));
-            charges.put("gst", Money.rupees(c.gst()));
-            charges.put("total", Money.rupees(c.total()));
-            m.put("charges", charges);
+            m.put("charges", charges(o.charges()));
         }
         if (o.realisedPnlPaise() != null) {
             m.put("realisedPnl", Money.rupees(o.realisedPnlPaise()));
