@@ -307,6 +307,16 @@ class OmsApiTest {
     }
 
     @Test
+    void nearTheTopOfTheDaysBandAMarketOrdersProtectionStopsAtTheBand() throws Exception {
+        LAST.put("HARBOR", 1190_00L);   // 19% up: 3% protection would be past the 20% band
+        JsonNode o = market("BUY", 1, "CNC");
+        assertThat(o.path("status").asText()).isEqualTo("FILLED");
+        assertThat(o.path("price").asText()).isEqualTo("1190.00");
+        assertThat(db.sql("SELECT protection_paise FROM orders WHERE id = ?").param(UUID.fromString(o.path("id").asText()))
+                .query(Long.class).single()).isEqualTo(1200_00L);
+    }
+
+    @Test
     void anOrderBeyondTheMoneyIsRejectedAndBlocksNothing() throws Exception {
         JsonNode o = market("BUY", 20, "CNC");
         assertThat(o.path("status").asText()).isEqualTo("REJECTED");
