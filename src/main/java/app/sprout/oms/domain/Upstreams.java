@@ -19,13 +19,17 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import org.springframework.stereotype.Component;
 
 /**
  * The services the order service talks to: accounts (is this customer allowed to trade), market
- * data (prices and trading hours), the ledger (the money) and the exchange. Plain HTTP with short
- * timeouts; no answer, or a 5xx, is {@link Unreachable}: the outcome is unknown, and callers decide
- * what that means for them.
+ * data (prices and trading hours), the ledger (the money) and the exchange. Plain HTTP, each call
+ * with a hard deadline that covers everything (name lookup, connecting, the answer): 3 s, and 2 s
+ * for the exchange, so a customer placing an order hears back well inside the gateway's 5 s even
+ * when the exchange has vanished. No answer, or a 5xx, is {@link Unreachable}: the outcome is
+ * unknown, and callers decide what that means for them.
  */
 @Component
 public class Upstreams {
@@ -59,7 +63,10 @@ public class Upstreams {
 
     private final OmsProperties props;
     private final ObjectMapper json;
-    private final HttpClient http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(2)).build();
+    static final Duration DEADLINE = Duration.ofSeconds(3);
+    static final Duration EXCHANGE_DEADLINE = Duration.ofSeconds(2);
+
+    private final HttpClient http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(1)).build();
     private final Map<String, Instrument> instruments = new ConcurrentHashMap<>();
 
     public Upstreams(OmsProperties props, ObjectMapper json) {
@@ -160,26 +167,32 @@ public class Upstreams {
     // ── exchange ─────────────────────────────────────────────────────────────
 
     public Reply placeOnExchange(Map<String, Object> order) {
-        return send("exchange", HttpRequest.newBuilder(URI.create(props.exchange().url() + "/member/v1/orders"))
+        return send("exchange", EXCHANGE_DEADLINE, HttpRequest.newBuilder(URI.create(props.exchange().url() + "/member/v1/orders"))
                 .header("Content-Type", "application/json").header("X-Member-Key", props.exchange().memberKey())
                 .POST(HttpRequest.BodyPublishers.ofString(write(order))));
     }
 
     public Reply exchangeOrder(UUID orderId) {
-        return send("exchange", HttpRequest.newBuilder(URI.create(props.exchange().url() + "/member/v1/orders/" + orderId))
+        return send("exchange", EXCHANGE_DEADLINE, HttpRequest.newBuilder(URI.create(props.exchange().url() + "/member/v1/orders/" + orderId))
                 .header("X-Member-Key", props.exchange().memberKey()).GET());
     }
 
     public Reply cancelOnExchange(UUID orderId) {
-        return send("exchange", HttpRequest.newBuilder(URI.create(props.exchange().url() + "/member/v1/orders/" + orderId))
+        return send("exchange", EXCHANGE_DEADLINE, HttpRequest.newBuilder(URI.create(props.exchange().url() + "/member/v1/orders/" + orderId))
                 .header("X-Member-Key", props.exchange().memberKey()).DELETE());
     }
 
     // ── plumbing ─────────────────────────────────────────────────────────────
 
     private Reply send(String what, HttpRequest.Builder req) {
+        return send(what, DEADLINE, req);
+    }
+
+    private Reply send(String what, Duration deadline, HttpRequest.Builder req) {
         try {
-            HttpResponse<String> res = http.send(req.timeout(Duration.ofSeconds(3)).build(), HttpResponse.BodyHandlers.ofString());
+            // sendAsync + get: the deadline holds even while the host's name is being looked up
+            HttpResponse<String> res = http.sendAsync(req.timeout(deadline).build(), HttpResponse.BodyHandlers.ofString())
+                    .get(deadline.toMillis(), TimeUnit.MILLISECONDS);
             if (res.statusCode() >= 500) {
                 throw new Unreachable(what + " answered " + res.statusCode(), null);
             }
@@ -187,11 +200,14 @@ public class Upstreams {
             return new Reply(res.statusCode(), body);
         } catch (Unreachable e) {
             throw e;
+        } catch (TimeoutException e) {
+            throw new Unreachable(what + " didn't answer within " + deadline.toMillis() + " ms", e);
         } catch (Exception e) {
             if (e instanceof InterruptedException) {
                 Thread.currentThread().interrupt();
             }
-            throw new Unreachable(what + " unreachable: " + e.getClass().getSimpleName(), e);
+            Throwable cause = e instanceof java.util.concurrent.ExecutionException && e.getCause() != null ? e.getCause() : e;
+            throw new Unreachable(what + " unreachable: " + cause.getClass().getSimpleName(), cause);
         }
     }
 
