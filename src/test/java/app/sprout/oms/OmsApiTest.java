@@ -492,9 +492,12 @@ class OmsApiTest {
         String day = "2026-10-07";   // a trade date of this test's own
         SESSION.set(day);
         market("BUY", 5, "CNC");                       // pays 5,000
+        clock.advance(Duration.ofSeconds(1));          // executions a second apart, as real ones are
         LAST.put("HARBOR", 1050_00L);
         JsonNode sold = market("SELL", 2, "CNC");      // gets 2,100 less charges, unsettled
+        clock.advance(Duration.ofSeconds(1));
         market("BUY", 10, "MIS");
+        clock.advance(Duration.ofSeconds(1));
         LAST.put("HARBOR", 1060_00L);
         market("SELL", 10, "MIS");                     // intraday profit 100, unsettled
         outbox.flush();
