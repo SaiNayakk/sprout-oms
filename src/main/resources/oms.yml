@@ -47,8 +47,10 @@ management:
         step: 15s
     tracing:
       endpoint: ${OTEL_TRACES_URL:http://localhost:4318/v1/traces}
+      export:
+        enabled: ${OTEL_ENABLED:false}   # send traces to a collector only when one runs
   tracing:
-    enabled: ${OTEL_ENABLED:false}
+    enabled: true   # always carry the trace onward (W3C traceparent), even when nothing collects it
     sampling:
       probability: 1.0
   metrics:
