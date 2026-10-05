@@ -307,6 +307,7 @@ public class Orders {
         db.sql("UPDATE orders SET sent_at = ? WHERE id = ?").params(ts(clock.instant()), o.id()).update();
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("clientOrderId", o.id().toString());
+        body.put("clientCode", o.userId().toString());   // the client code registered with clearing at onboarding
         body.put("symbol", o.symbol());
         body.put("side", o.side().name());
         body.put("type", o.orderType().name());
@@ -339,7 +340,8 @@ public class Orders {
     /** Applies the exchange's view of an order (its answer, or what it says when asked). */
     public void applyExchange(UUID id, JsonNode ex) {
         switch (ex.path("status").asText()) {
-            case "FILLED" -> fill(id, Money.paise(ex.path("price").asText()), UUID.fromString(ex.path("tradeId").asText()));
+            case "FILLED" -> fill(id, Money.paise(ex.path("price").asText()), UUID.fromString(ex.path("tradeId").asText()),
+                    LocalDate.parse(ex.path("sessionDate").asText()));
             case "OPEN" -> db.sql("UPDATE orders SET status = 'OPEN', updated_at = ? WHERE id = ? AND status = 'PENDING'")
                     .params(ts(clock.instant()), id).update();
             case "CANCELLED" -> end(id, "CANCELLED", ex.path("reason").asText("Cancelled."), null, null);
@@ -349,9 +351,9 @@ public class Orders {
     }
 
     /** An execution report from the exchange's callback. */
-    public void onExecution(String type, UUID id, long pricePaise, UUID tradeId, String reason) {
+    public void onExecution(String type, UUID id, long pricePaise, UUID tradeId, LocalDate tradeDate, String reason) {
         switch (type) {
-            case "ORDER_FILLED" -> fill(id, pricePaise, tradeId);
+            case "ORDER_FILLED" -> fill(id, pricePaise, tradeId, tradeDate);
             case "ORDER_CANCELLED" -> end(id, "CANCELLED", reason == null ? "Cancelled." : reason, null, null);
             case "ORDER_EXPIRED" -> end(id, "EXPIRED", reason == null ? "The market closed before it executed." : reason, null, null);
             default -> log.warn("Unknown execution report {} for order {}", type, id);
@@ -384,7 +386,7 @@ public class Orders {
      * Books an execution: the order, the customer's holdings or intraday position, and the ledger
      * entry for the money, all in one transaction. Applying the same execution again does nothing.
      */
-    public void fill(UUID id, long price, UUID tradeId) {
+    public void fill(UUID id, long price, UUID tradeId, LocalDate tradeDate) {
         tx.executeWithoutResult(s -> {
             Order o = lock(id).orElse(null);
             if (o == null || o.status().equals("FILLED")) {
@@ -478,17 +480,18 @@ public class Orders {
                 }
             }
             e.credit(unsettled(user), proceeds);
+            long unsettledCredit = proceeds;
             e.credit("sprout:income:brokerage", charges.brokerage()).credit("sprout:payable:stt", charges.stt())
                     .credit("sprout:payable:exchange-charges", charges.exchange()).credit("sprout:payable:sebi-fees", charges.sebi())
                     .credit("sprout:payable:stamp-duty", charges.stamp()).credit("sprout:payable:gst", charges.gst());
 
             Instant now = clock.instant();
             db.sql("""
-                            UPDATE orders SET status = 'FILLED', blocked_paise = 0, fill_price_paise = ?, trade_id = ?, brokerage_paise = ?,
-                                   stt_paise = ?, exchange_paise = ?, sebi_paise = ?, stamp_paise = ?, gst_paise = ?, realised_pnl_paise = ?,
-                                   filled_at = ?, updated_at = ? WHERE id = ?""")
-                    .params(price, tradeId, charges.brokerage(), charges.stt(), charges.exchange(), charges.sebi(), charges.stamp(),
-                            charges.gst(), realised, ts(now), ts(now), id)
+                            UPDATE orders SET status = 'FILLED', blocked_paise = 0, fill_price_paise = ?, trade_id = ?, trade_date = ?,
+                                   brokerage_paise = ?, stt_paise = ?, exchange_paise = ?, sebi_paise = ?, stamp_paise = ?, gst_paise = ?,
+                                   realised_pnl_paise = ?, unsettled_paise = ?, filled_at = ?, updated_at = ? WHERE id = ?""")
+                    .params(price, tradeId, tradeDate, charges.brokerage(), charges.stt(), charges.exchange(), charges.sebi(), charges.stamp(),
+                            charges.gst(), realised, unsettledCredit, ts(now), ts(now), id)
                     .update();
             ledger.add("fill:" + id, (o.side() == Side.BUY ? "Bought " : "Sold ") + o.quantity() + " " + o.symbol() + " at ₹"
                     + Money.rupees(price) + " (" + o.product() + ")", id.toString(), e);

@@ -76,6 +76,7 @@ class OmsApiTest {
     static final Map<String, Long> LAST = new ConcurrentHashMap<>();
     static final AtomicReference<String> STATE = new AtomicReference<>("OPEN");
     static final AtomicReference<String> TIME = new AtomicReference<>("11:00");
+    static final AtomicReference<String> SESSION = new AtomicReference<>("2026-10-05");
     // accounts
     static final Set<String> ACCOUNTS = ConcurrentHashMap.newKeySet();
     // the ledger
@@ -131,6 +132,7 @@ class OmsApiTest {
         LAST.put("INKWELL", 200_00L);
         STATE.set("OPEN");
         TIME.set("11:00");
+        SESSION.set("2026-10-05");
         LEDGER_DOWN.set(false);
         EXCHANGE_DOWN.set(false);
         EXCHANGE_LOSES_REPLIES.set(false);
@@ -240,6 +242,15 @@ class OmsApiTest {
                 .header("X-Exchange-Signature", "sha256=" + sign(body)).content(body));
     }
 
+    /** A map of any size, in order: key, value, key, value ... */
+    static Map<String, Object> fields(Object... kv) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        for (int i = 0; i < kv.length; i += 2) {
+            m.put((String) kv[i], kv[i + 1]);
+        }
+        return m;
+    }
+
     static String sign(String body) throws Exception {
         Mac mac = Mac.getInstance("HmacSHA256");
         mac.init(new SecretKeySpec(SECRET.getBytes(StandardCharsets.UTF_8), "HmacSHA256"));
@@ -279,14 +290,14 @@ class OmsApiTest {
         o2.put("status", "FILLED");
         o2.put("price", "989.50");
         o2.put("tradeId", UUID.randomUUID().toString());
-        Map<String, Object> event = Map.of("eventId", eventId, "type", "ORDER_FILLED", "clientOrderId", o.path("id").asText(),
+        Map<String, Object> event = fields("eventId", eventId, "type", "ORDER_FILLED", "clientOrderId", o.path("id").asText(),
                 "exchangeOrderId", o2.get("exchangeOrderId"), "symbol", "HARBOR", "side", "BUY", "quantity", 2, "price", "989.50",
-                "tradeId", o2.get("tradeId"), "occurredAt", "2026-10-05T05:31:00Z");
+                "tradeId", o2.get("tradeId"), "sessionDate", "2026-10-05", "occurredAt", "2026-10-05T05:31:00Z");
         callback(event).andExpect(status().isNoContent());
         callback(event).andExpect(status().isNoContent());                      // delivered twice
-        callback(Map.of("eventId", UUID.randomUUID().toString(), "type", "ORDER_FILLED", "clientOrderId", o.path("id").asText(),
+        callback(fields("eventId", UUID.randomUUID().toString(), "type", "ORDER_FILLED", "clientOrderId", o.path("id").asText(),
                 "exchangeOrderId", o2.get("exchangeOrderId"), "symbol", "HARBOR", "side", "BUY", "quantity", 2, "price", "989.50",
-                "tradeId", o2.get("tradeId"), "occurredAt", "2026-10-05T05:31:00Z")).andExpect(status().isNoContent());   // and once more, re-sent
+                "tradeId", o2.get("tradeId"), "sessionDate", "2026-10-05", "occurredAt", "2026-10-05T05:31:00Z")).andExpect(status().isNoContent());   // and once more, re-sent
         assertThat(fetch(o).path("status").asText()).isEqualTo("FILLED");
         assertThat(holdings().get(0).path("quantity").asInt()).isEqualTo(2);
         assertThat(cash()).isEqualTo(rupees(10_000_00 - 1979_00 - 2_37));       // value 1979 and its charges, once
@@ -464,6 +475,65 @@ class OmsApiTest {
         user = me;
     }
 
+    // ── settlement ───────────────────────────────────────────────────────────
+
+    JsonNode summary(String day) throws Exception {
+        return body(mvc.perform(get("/internal/v1/settlements/" + day + "/summary").header("X-Service-Key", "dev-only-service-key"))
+                .andExpect(status().isOk()).andExpect(MATCHES_CONTRACT));
+    }
+
+    ResultActions internal(String path, Object body) throws Exception {
+        return mvc.perform(post(path).header("X-Service-Key", "dev-only-service-key").contentType(MediaType.APPLICATION_JSON)
+                .content(JSON.writeValueAsString(body)));
+    }
+
+    @Test
+    void aSettledDayMakesSaleProceedsCashAndBoughtSharesDelivered() throws Exception {
+        String day = "2026-10-07";   // a trade date of this test's own
+        SESSION.set(day);
+        market("BUY", 5, "CNC");                       // pays 5,000
+        LAST.put("HARBOR", 1050_00L);
+        JsonNode sold = market("SELL", 2, "CNC");      // gets 2,100 less charges, unsettled
+        market("BUY", 10, "MIS");
+        LAST.put("HARBOR", 1060_00L);
+        market("SELL", 10, "MIS");                     // intraday profit 100, unsettled
+        outbox.flush();
+
+        JsonNode s = summary(day);
+        assertThat(s.path("payable").asText()).isEqualTo("5000.00");
+        assertThat(s.path("receivable").asText()).isEqualTo("2200.00");
+        assertThat(s.path("unpostedLedgerEntries").asInt()).isZero();
+        JsonNode line = s.path("lines").get(0);
+        assertThat(line.path("clientCode").asText()).isEqualTo(user.toString());
+        assertThat(line.path("bought").asLong()).isEqualTo(15);
+        assertThat(line.path("sold").asLong()).isEqualTo(12);
+
+        // a short delivery is charged to the client, once
+        Map<String, Object> shortage = Map.of("settlementId", "scc-test-1", "shortages",
+                List.of(Map.of("clientCode", user.toString(), "symbol", "HARBOR", "quantity", 1, "closeOutValue", "600.00")));
+        internal("/internal/v1/settlements/" + day + "/shortages", shortage).andExpect(status().isNoContent());
+        internal("/internal/v1/settlements/" + day + "/shortages", shortage).andExpect(status().isNoContent());
+        assertThat(funds().path("dues").asText()).isEqualTo("600.00");
+        assertThat(summary(day).path("payable").asText()).isEqualTo("5600.00");
+
+        long unsettled = paise(funds().path("unsettled").asText());
+        long cashBefore = paise(funds().path("cash").asText());
+        assertThat(unsettled).isEqualTo(2100_00 - paise(sold.path("charges").path("total").asText()) + 100_00);
+        Map<String, Object> done = Map.of("settlementId", "scc-test-1", "deliveries",
+                List.of(Map.of("clientCode", user.toString(), "symbol", "HARBOR", "quantity", 3)));
+        internal("/internal/v1/settlements/" + day + "/complete", done).andExpect(status().isNoContent());
+        internal("/internal/v1/settlements/" + day + "/complete", done).andExpect(status().isNoContent());
+        rms.round();   // dues are recovered from the cash now there is some
+        JsonNode f = funds();
+        assertThat(f.path("unsettled").asText()).isEqualTo("0.00");
+        assertThat(f.path("dues").asText()).isEqualTo("0.00");
+        assertThat(paise(f.path("cash").asText())).isEqualTo(cashBefore + unsettled - 600_00);
+        JsonNode h = holdings().get(0);
+        assertThat(h.path("quantity").asInt()).isEqualTo(3);
+        assertThat(h.path("t1Quantity").asInt()).as("delivered").isZero();
+        mvc.perform(get("/internal/v1/settlements/" + day + "/summary")).andExpect(status().isUnauthorized());
+    }
+
     // ── when the market is closed ────────────────────────────────────────────
 
     @Test
@@ -626,7 +696,7 @@ class OmsApiTest {
     }
 
     static Map<String, Object> market() {
-        return Map.of("state", STATE.get(), "sessionDate", "2026-10-05", "marketTime", "2026-10-05T" + TIME.get() + ":00+05:30");
+        return Map.of("state", STATE.get(), "sessionDate", SESSION.get(), "marketTime", SESSION.get() + "T" + TIME.get() + ":00+05:30");
     }
 
     static synchronized void ledgerPost(HttpExchange ex) throws IOException {
@@ -692,7 +762,7 @@ class OmsApiTest {
             order.put("type", o.path("type").asText());
             order.put("quantity", o.path("quantity").asInt());
             order.put("filledQuantity", 0);
-            order.put("sessionDate", "2026-10-05");
+            order.put("sessionDate", SESSION.get());
             long last = LAST.get(o.path("symbol").asText());
             boolean buy = o.path("side").asText().equals("BUY");
             boolean fills;
