@@ -492,11 +492,16 @@ class OmsApiTest {
         assertThat(o.path("status").asText()).isEqualTo("PENDING");
         assertThat(paise(o.path("blocked").asText())).isPositive();
         EXCHANGE_DOWN.set(false);
-        clock.advance(Duration.ofSeconds(15));
-        rms.round();
+        // the risk desk's real pace: a round every second, asking the exchange about it every 10 s
+        for (int second = 1; second <= 25; second++) {
+            clock.advance(Duration.ofSeconds(1));
+            rms.round();
+        }
         assertThat(fetch(o).path("status").asText()).isEqualTo("PENDING");     // not given up on yet
-        clock.advance(Duration.ofSeconds(40));
-        rms.round();
+        for (int second = 26; second <= 45 && fetch(o).path("status").asText().equals("PENDING"); second++) {
+            clock.advance(Duration.ofSeconds(1));
+            rms.round();
+        }
         assertThat(fetch(o).path("status").asText()).isEqualTo("REJECTED");
         assertThat(fetch(o).path("rejection").path("code").asText()).isEqualTo("UNAVAILABLE");
         assertThat(cash()).isEqualTo("10000.00");

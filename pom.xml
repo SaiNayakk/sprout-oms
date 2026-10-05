@@ -14,7 +14,7 @@
   <!-- Released as git tags vX.Y.Z; hosts build a release from its tag (sprout-platform ADR-011). -->
   <groupId>com.github.SaiNayakk</groupId>
   <artifactId>sprout-oms</artifactId>
-  <version>0.1.1</version>
+  <version>0.1.2</version>
   <name>sprout-oms</name>
   <description>Sprout's order management: orders, risk checks, holdings, intraday positions and charges.</description>
 

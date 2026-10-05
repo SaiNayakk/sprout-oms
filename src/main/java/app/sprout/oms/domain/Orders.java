@@ -304,6 +304,7 @@ public class Orders {
 
     /** Sends a PENDING order to the exchange and applies whatever it answers. Unknown outcomes stay PENDING. */
     public void send(Order o) {
+        db.sql("UPDATE orders SET sent_at = ? WHERE id = ?").params(ts(clock.instant()), o.id()).update();
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("clientOrderId", o.id().toString());
         body.put("symbol", o.symbol());
@@ -611,11 +612,11 @@ public class Orders {
         List<Order> unsure = db.sql(ORDER_SQL + " WHERE status IN ('PENDING', 'OPEN') AND updated_at < ? ORDER BY updated_at LIMIT 100")
                 .param(ts(olderThan)).query(Orders::row).list();
         int settled = 0;
-        Instant giveUp = olderThan.minusSeconds(20);
+        Instant giveUp = clock.instant().minusSeconds(30);
         for (Order o : unsure) {
             if (o.status().equals("PENDING") && o.holdPaise() > 0 && o.blockedPaise() == 0) {
                 // placing it stopped between blocking the money and recording that: make sure the hold ends at zero
-                if (o.updatedAt().isBefore(giveUp)) {
+                if (o.createdAt().isBefore(giveUp)) {
                     tx.executeWithoutResult(s -> {
                         if (db.sql("UPDATE orders SET status = 'REJECTED', rejection_code = 'UNAVAILABLE', rejection_message = ?, updated_at = ? "
                                         + "WHERE id = ? AND status = 'PENDING' AND blocked_paise = 0")
@@ -633,7 +634,7 @@ public class Orders {
                 if (r.ok()) {
                     applyExchange(o.id(), r.body());
                     settled += order(o.id()).working() ? 0 : 1;
-                } else if (r.status() == 404 && o.status().equals("PENDING") && o.updatedAt().isBefore(giveUp)) {
+                } else if (r.status() == 404 && o.status().equals("PENDING") && sentAt(o.id()).isBefore(giveUp)) {
                     end(o.id(), "REJECTED", null, "UNAVAILABLE", "The order never reached the exchange. Nothing was placed.");
                     settled++;
                 }
@@ -643,6 +644,11 @@ public class Orders {
             db.sql("UPDATE orders SET updated_at = ? WHERE id = ? AND status IN ('PENDING', 'OPEN')").params(ts(clock.instant()), o.id()).update();
         }
         return settled;
+    }
+
+    /** When the order last left for the exchange (before it was sent at all: when it was placed). */
+    private Instant sentAt(UUID id) {
+        return db.sql("SELECT COALESCE(sent_at, created_at) FROM orders WHERE id = ?").param(id).query(Timestamp.class).single().toInstant();
     }
 
     // ── reading ──────────────────────────────────────────────────────────────
