@@ -1,0 +1,84 @@
+# Configuration for the oms service. Named oms.yml (not application.yml) so several services can
+# share one JVM host without their settings colliding.
+spring:
+  application:
+    name: sprout-oms
+  datasource:
+    url: ${OMS_DB_URL:jdbc:postgresql://localhost:5432/sprout?currentSchema=oms}
+    username: ${OMS_DB_USER:sprout}
+    password: ${OMS_DB_PASSWORD:sprout}
+    hikari:
+      maximum-pool-size: 5
+      pool-name: oms
+      connection-timeout: 2000   # fail fast when the database is gone (CHAOS-01's lesson)
+      validation-timeout: 1000
+  flyway:
+    locations: classpath:db/oms
+    schemas: oms
+    default-schema: oms
+  jackson:
+    default-property-inclusion: non_null   # absent, never null: the contracts say so
+    deserialization:
+      fail-on-unknown-properties: true
+  jmx:
+    enabled: false
+
+server:
+  port: ${OMS_PORT:8109}
+  address: ${OMS_BIND:127.0.0.1}
+  tomcat:
+    threads:
+      max: 16
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+  otlp:
+    metrics:
+      export:
+        enabled: ${OTEL_ENABLED:false}
+        url: ${OTEL_METRICS_URL:http://localhost:4318/v1/metrics}
+        step: 15s
+    tracing:
+      endpoint: ${OTEL_TRACES_URL:http://localhost:4318/v1/traces}
+  tracing:
+    enabled: ${OTEL_ENABLED:false}
+    sampling:
+      probability: 1.0
+  metrics:
+    tags:
+      service: sprout-oms
+
+logging:
+  structured:
+    format:
+      console: ${LOG_FORMAT:}
+  pattern:
+    correlation: "[%X{requestId:-}] "
+
+sprout:
+  oms:
+    leverage: 5                      # intraday (MIS) margin is a fifth of the value
+    market-protection-percent: 3     # how far a market order may execute from the price it was placed at
+    square-off-at: "15:20"           # market time when every intraday position is closed
+    risk-loss-percent: 90            # an intraday position losing this much of its margin is closed early
+    band-percent: 20                 # the exchange's price band, checked here too so queued orders fail early
+    rms-every: ${OMS_RMS_EVERY:2s}   # how often after-market orders, square-off and risk are looked at
+    reconcile-after: 10s             # an order the exchange hasn't confirmed by then is asked about
+    accounts:
+      url: ${OMS_ACCOUNTS_URL:http://127.0.0.1:8104}
+      service-key: ${SPROUT_SERVICE_KEY:dev-only-service-key}
+    ledger:
+      url: ${OMS_LEDGER_URL:http://127.0.0.1:8106}
+    marketdata:
+      url: ${OMS_MARKETDATA_URL:http://127.0.0.1:8103}
+    exchange:
+      url: ${OMS_EXCHANGE_URL:http://127.0.0.1:8108}
+      member-key: ${EXCHANGE_SPROUT_MEMBER_KEY:dev-only-member-key}
+      webhook-secret: ${EXCHANGE_SPROUT_WEBHOOK_SECRET:dev-only-exchange-webhook-secret}
