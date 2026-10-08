@@ -511,6 +511,35 @@ class OmsApiTest {
                 .content(JSON.writeValueAsString(body)));
     }
 
+    /** Found in the sandbox after two days: customers who bought one share and sold another the same day kept a share "in transit" forever. */
+    @Test
+    void aShareBoughtOnTheSameDayAnotherIsSoldIsStillDeliveredWhenTheDaySettles() throws Exception {
+        String first = "2026-10-11";
+        String second = "2026-10-12";
+        SESSION.set(first);
+        market("BUY", 4, "CNC");
+        outbox.flush();
+        internal("/internal/v1/settlements/" + first + "/complete", Map.of("settlementId", "t1-day1", "deliveries",
+                List.of(Map.of("clientCode", user.toString(), "symbol", "HARBOR", "quantity", 4)))).andExpect(status().isNoContent());
+        assertThat(holdings().get(0).path("t1Quantity").asInt()).as("the first day's shares are delivered").isZero();
+
+        SESSION.set(second);
+        clock.advance(Duration.ofSeconds(1));
+        market("BUY", 1, "CNC");                       // arrives next session
+        clock.advance(Duration.ofSeconds(1));
+        market("SELL", 1, "CNC");                      // one of the delivered ones leaves
+        outbox.flush();
+        assertThat(holdings().get(0).path("quantity").asInt()).isEqualTo(4);
+        assertThat(holdings().get(0).path("t1Quantity").asInt()).as("the bought share is still in transit").isEqualTo(1);
+
+        // the depository's net movement for the customer that day is nothing (one in, one out): no delivery line at all
+        internal("/internal/v1/settlements/" + second + "/complete", Map.of("settlementId", "t1-day2", "deliveries", List.of()))
+                .andExpect(status().isNoContent());
+        JsonNode h = holdings().get(0);
+        assertThat(h.path("quantity").asInt()).isEqualTo(4);
+        assertThat(h.path("t1Quantity").asInt()).as("delivered: nothing may stay in transit once its day has settled").isZero();
+    }
+
     @Test
     void aSettledDayMakesSaleProceedsCashAndBoughtSharesDelivered() throws Exception {
         String day = "2026-10-07";   // a trade date of this test's own
