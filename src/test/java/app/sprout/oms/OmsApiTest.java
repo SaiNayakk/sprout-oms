@@ -531,6 +531,7 @@ class OmsApiTest {
         outbox.flush();
         assertThat(holdings().get(0).path("quantity").asInt()).isEqualTo(4);
         assertThat(holdings().get(0).path("t1Quantity").asInt()).as("the bought share is still in transit").isEqualTo(1);
+        assertThat(depositoryShouldHold("HARBOR")).as("the sold share only leaves the depository when its day settles").isEqualTo(4);
 
         // the depository's net movement for the customer that day is nothing (one in, one out): no delivery line at all
         internal("/internal/v1/settlements/" + second + "/complete", Map.of("settlementId", "t1-day2", "deliveries", List.of()))
@@ -538,6 +539,22 @@ class OmsApiTest {
         JsonNode h = holdings().get(0);
         assertThat(h.path("quantity").asInt()).isEqualTo(4);
         assertThat(h.path("t1Quantity").asInt()).as("delivered: nothing may stay in transit once its day has settled").isZero();
+        assertThat(depositoryShouldHold("HARBOR")).isEqualTo(4);
+    }
+
+    /** What the books say the depository holds for this customer, as the reconciliation reads it. */
+    private long depositoryShouldHold(String symbol) throws Exception {
+        for (JsonNode c : body(mvc.perform(get("/internal/v1/recon").header("X-Service-Key", "dev-only-service-key"))
+                .andExpect(status().isOk()).andExpect(MATCHES_CONTRACT)).path("customers")) {
+            if (c.path("userId").asText().equals(user.toString())) {
+                for (JsonNode d : c.path("delivered")) {
+                    if (d.path("symbol").asText().equals(symbol)) {
+                        return d.path("quantity").asLong();
+                    }
+                }
+            }
+        }
+        return 0;
     }
 
     @Test
