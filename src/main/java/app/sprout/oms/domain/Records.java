@@ -64,7 +64,23 @@ public class Records {
                         GROUP BY user_id""")
                 .query((rs, n) -> money.computeIfAbsent(rs.getObject(1, UUID.class), k -> new long[2])[1] = rs.getLong(2)).list();
         Map<UUID, Map<String, Long>> delivered = new LinkedHashMap<>();
-        db.sql("SELECT user_id, symbol, quantity - t1_quantity FROM holdings WHERE quantity - t1_quantity <> 0 ORDER BY user_id, symbol")
+        // What the depository holds: the delivered shares, plus those sold on days that haven't settled (they leave it when
+        // their day does), but only as many as were delivered: a sale that ate into shares still in transit never touched it.
+        db.sql("""
+                        WITH unsettled AS (
+                            SELECT user_id, symbol,
+                                   SUM(CASE WHEN side = 'SELL' THEN quantity ELSE 0 END) AS sold,
+                                   SUM(CASE WHEN side = 'BUY' THEN quantity ELSE 0 END) AS bought
+                            FROM orders
+                            WHERE status = 'FILLED' AND product = 'CNC' AND trade_date IS NOT NULL
+                              AND trade_date NOT IN (SELECT trade_date FROM settled_days)
+                            GROUP BY user_id, symbol),
+                        held AS (
+                            SELECT h.user_id, h.symbol,
+                                   h.quantity - h.t1_quantity + LEAST(COALESCE(u.sold, 0),
+                                       GREATEST(0, h.quantity + COALESCE(u.sold, 0) - COALESCE(u.bought, 0))) AS shares
+                            FROM holdings h LEFT JOIN unsettled u ON u.user_id = h.user_id AND u.symbol = h.symbol)
+                        SELECT user_id, symbol, shares FROM held WHERE shares <> 0 ORDER BY user_id, symbol""")
                 .query((rs, n) -> delivered.computeIfAbsent(rs.getObject(1, UUID.class), k -> new LinkedHashMap<>())
                         .put(rs.getString(2), rs.getLong(3)))
                 .list();
