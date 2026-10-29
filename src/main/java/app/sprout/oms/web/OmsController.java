@@ -19,6 +19,7 @@ import app.sprout.oms.domain.Settlements;
 import app.sprout.oms.domain.Settlements.Delivery;
 import app.sprout.oms.domain.Settlements.Shortage;
 import app.sprout.oms.domain.Settlements.Summary;
+import app.sprout.oms.domain.Traces;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.nio.charset.StandardCharsets;
@@ -75,9 +76,10 @@ public class OmsController {
     private final ObjectMapper json;
     private final JdbcClient db;
     private final Clock clock;
+    private final Traces traces;
 
     public OmsController(Orders orders, Settlements settlements, Records records, Portfolio portfolio, OmsProperties props, ObjectMapper json,
-                         JdbcClient db, Clock clock) {
+                         JdbcClient db, Clock clock, Traces traces) {
         this.orders = orders;
         this.settlements = settlements;
         this.records = records;
@@ -86,6 +88,7 @@ public class OmsController {
         this.json = json;
         this.db = db;
         this.clock = clock;
+        this.traces = traces;
     }
 
     @PostMapping("/v1/orders")
@@ -106,6 +109,11 @@ public class OmsController {
     @GetMapping("/v1/orders/{id}")
     public Map<String, Object> get(@RequestHeader(value = "X-User-Id", required = false) String user, @PathVariable UUID id) {
         return dto(orders.mine(userId(user), id));
+    }
+
+    @GetMapping("/v1/orders/{id}/trace")
+    public Map<String, Object> trace(@RequestHeader(value = "X-User-Id", required = false) String user, @PathVariable UUID id) {
+        return traces.trace(userId(user), id);
     }
 
     @DeleteMapping("/v1/orders/{id}")
