@@ -338,6 +338,38 @@ class OmsApiTest {
         assertThat(cash()).isEqualTo("10000.00");
     }
 
+    JsonNode trace(JsonNode order) throws Exception {
+        return JSON.readTree(mvc.perform(get("/v1/orders/" + order.path("id").asText() + "/trace").header("X-User-Id", user.toString()))
+                .andExpect(status().isOk()).andExpect(MATCHES_CONTRACT).andReturn().getResponse().getContentAsString());
+    }
+
+    @Test
+    void anOrdersTraceShowsEachStepItWentThroughFromWhatEachStepRecorded() throws Exception {
+        JsonNode filled = trace(market("BUY", 2, "CNC"));
+        assertThat(filled.path("complete").asBoolean()).as("matched and posted: nowhere further to go").isTrue();
+        List<String> services = new ArrayList<>();
+        filled.path("steps").forEach(st -> services.add(st.path("service").asText()));
+        assertThat(services).containsExactly("oms", "ledger", "exchange", "exchange", "portfolio", "ledger");
+        assertThat(filled.path("steps").get(3).path("step").asText()).isEqualTo("Matched at ₹1000.00");
+        assertThat(filled.path("steps").get(0).has("durationMs")).as("the first step has nothing before it").isFalse();
+        filled.path("steps").forEach(st -> assertThat(st.path("status").asText()).isEqualTo("ok"));
+
+        JsonNode open = trace(order("BUY", 1, "LIMIT", "950.00", "CNC"));
+        assertThat(open.path("complete").asBoolean()).isFalse();
+        JsonNode last = open.path("steps").get(open.path("steps").size() - 1);
+        assertThat(last.path("status").asText()).isEqualTo("pending");
+        assertThat(last.path("step").asText()).isEqualTo("Waiting for a match");
+
+        JsonNode rejected = trace(market("BUY", 20, "CNC"));
+        assertThat(rejected.path("complete").asBoolean()).isTrue();
+        JsonNode why = rejected.path("steps").get(rejected.path("steps").size() - 1);
+        assertThat(why.path("status").asText()).isEqualTo("failed");
+        assertThat(why.path("detail").asText()).as("why, in the customer's words").contains("available");
+
+        mvc.perform(get("/v1/orders/" + open.path("orderId").asText() + "/trace").header("X-User-Id", UUID.randomUUID().toString()))
+                .andExpect(status().isNotFound()).andExpect(MATCHES_CONTRACT);
+    }
+
     @Test
     void youCanOnlySellWhatYouHoldAndTheProceedsWaitForSettlement() throws Exception {
         market("BUY", 4, "CNC");
